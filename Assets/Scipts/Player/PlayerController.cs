@@ -2,12 +2,19 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public class PlayerController : MonoBehaviour
+public class PlayerController : MonoBehaviour, IDamageable
 {
     private Rigidbody2D rb;
+    private Animator anim;
+    private FixedJoystick joystick;
 
     public float speed;
     public float jumpForce; // (或者叫jumpSpeed)
+
+    [Header("Player State")]
+    public float health;
+    public bool isDead; // 默认初始化为false
+    //public bool isHurt;
 
     [Header("Ground Check")]
     public Transform groundCheck;
@@ -32,22 +39,54 @@ public class PlayerController : MonoBehaviour
     void Start()
     {
         rb = GetComponent<Rigidbody2D>();
+        anim = GetComponent<Animator>();
+        joystick = FindObjectOfType<FixedJoystick>();
+
+        GameManager.instance.GetPlayer(this);
+
+        //每次进入新的scene，加载血量
+        health = GameManager.instance.LoadHealth();
+        UIManager.instance.UpdateHealth(health);
     }
 
     // Update is called once per frame
     void Update()
     {
+        anim.SetBool("dead", isDead); //"dead"位置1：放在这里表示每帧都会检测是否死亡
+        //TODO:为什么不会立即播放死亡动画？
+        //死亡时不检测输入
+        if (isDead) return; 
+
+        //用来判断是否正在播放受伤动画
+        //isHurt = anim.GetCurrentAnimatorStateInfo(1).IsName("player_hit");
         CheckInput();
     }
 
     //物理相关的update
     public void FixedUpdate()
     {
+        //死亡时速度立刻归零，只会被往上炸飞一下。
+        //不然如果有x轴初速度，还会横向一直匀速飞（直到撞墙）
+        //匀速是∵玩家Collider的Material的摩擦力Friction=0
+        //且不再进行物理相关的update
+        if (isDead)
+        {
+            rb.velocity = Vector2.zero;
+            return;
+        }
         PhysicsCheck();
+        
+        //非受伤状态才可以移动和跳跃
+        //if (!isHurt)
+        //{
+        //    Movement();//input会覆盖Rigidbody的速度，所以用isHurt来锁定就可以让 Player 被击飞了
+        //    Jump();
+        //}
         Movement();
         Jump();
     }
 
+    //PC端：键盘输入
     void CheckInput()
     {
         if(Input.GetButtonDown("Jump") && isGround)
@@ -62,17 +101,32 @@ public class PlayerController : MonoBehaviour
     }
     void Movement()
     {
+        //PC端：键盘操作
         //float horizontalInput = Input.GetAxis("Horizontal"); // -1 ~ 1 (包含小数)
-        float horizontalInput = Input.GetAxisRaw("Horizontal"); // -1 ~ 1 (-1,0,1)
+        //float horizontalInput = Input.GetAxisRaw("Horizontal"); // -1 ~ 1 (-1,0,1)
+
+        //移动端：操纵杆
+        //TODO：现在变成-1 ~ 1 (包含小数)了,可以变速移动了
+        float horizontalInput = joystick.Horizontal;
 
         rb.velocity = new Vector2(horizontalInput * speed, rb.velocity.y);
 
-        //转向的3种方式
-        //1.修改Rotation 2.修改Scale 3.修改Sprite Renderer(不推荐)
-        //这里采用第2种
-        if (horizontalInput != 0)
+        //转向的4种方式
+        //1.修改Rotation 2.修改localScale 3.修改Sprite Renderer(不推荐) //4.修改eulerAngles
+        //这里采用第2种 修改localScale
+        //if (horizontalInput != 0)
+        //{
+        //    transform.localScale = new Vector3(horizontalInput, 1, 1);
+        //}
+
+        //4.修改eulerAngles
+        if (horizontalInput > 0)
         {
-            transform.localScale = new Vector3(horizontalInput, 1, 1);
+            transform.eulerAngles = new Vector3(0, 0, 0);
+        }
+        else if(horizontalInput < 0) //避免=0的时候也翻转过去
+        {
+            transform.eulerAngles = new Vector3(0, 180, 0);
         }
 
     }
@@ -117,6 +171,11 @@ public class PlayerController : MonoBehaviour
         }
     }
 
+    public void ButtonJump()
+    {
+        if(isGround) willJump = true;
+    }
+
     public void Attack()
     {
         if (Time.time > nextAttack)
@@ -150,5 +209,27 @@ public class PlayerController : MonoBehaviour
     public void OnDrawGizmos()
     {
         Gizmos.DrawWireSphere(groundCheck.position, checkRadius);
+    }
+
+    public void GetHit(float damage)
+    {
+        //TODO：考虑去掉受伤的短暂无敌
+        //TODO: Q:多个敌人不断攻击玩家，可能会频繁触发hit，玩家在HitState动画状态 触发hit 并且 死亡isDead=true ，这时HitState会播放哪一个动画呢？
+        //A:由于以下代码的顺序，会先isDead，再触发hit，而isDead与dead在Update中每帧绑定，所以应该会先死亡？？？
+
+        //受伤动画播放期间短暂无敌，防止该过程中因受到多次伤害被秒杀
+        if (!anim.GetCurrentAnimatorStateInfo(1).IsName("player_hit"))
+        {
+            health -= damage;
+            if (health < 1)
+            {
+                health = 0;
+                isDead = true;
+                //anim.SetBool("dead",isDead); //"dead"位置2：放在这里表示只有受到伤害才可能死亡 (Animator中dead初始化为false) 不用每帧都检测是否死亡
+            }
+            anim.SetTrigger("hit");
+        }
+
+        UIManager.instance.UpdateHealth(health);
     }
 }
